@@ -49,7 +49,7 @@ class Torus(RenderObject):
     @split_input
     def calc_distances(self, x, y, z):
         z_ = z - 3.
-        return norm((norm(x, y) - 1.), z_) - 0.1
+        return norm((norm(x, y) - 1.), z_) - 0.2
 
 class Plane(RenderObject):
     def __init__(self, normal, ppos):
@@ -109,7 +109,7 @@ class RayTracer:
         return normals
 
     def calc_hitmask(self):
-        return self.distance_buffer[0,:,:] < 0.8
+        return self.distance_buffer[0,:,:] < 0.05
 
 class Renderer:
     def __init__(self, aspact_ratio: float, resolution: Tuple[int, int], z: float, scene: RenderObject):
@@ -149,7 +149,7 @@ class Renderer:
     def calc_specular(self, light_vec, normals, hitmask, direction_buffer):
         r = 2*np.sum(direction_buffer*normals, axis=0)*normals - direction_buffer
         specular = np.sum(r*light_vec, axis=0)
-        specular = np.power(specular.clip(0., 1.), 15)
+        specular = np.power(specular.clip(0., 1.), 1)
         specular[~hitmask] = 0.0
         return specular
 
@@ -169,29 +169,38 @@ class Renderer:
     def run(self, iterations):
         self.direct_raytrace.run(iterations)
 
-        light_vec = np.array([0.7, 0.3, 1.]).reshape([3,1,1])
+        light_vec = np.array([0.4, 0.3, 1.]).reshape([3,1,1])
         light_vec = normalize(light_vec, axis=0)
 
         hitmask = self.direct_raytrace.calc_hitmask()
         normals = self.direct_raytrace.calc_normals()
 
-        layers = np.zeros(self.shape_n(4))
+        layers = np.zeros(self.shape_n(5))
 
         layers[0,:,:] = self.calc_diffuse(light_vec, normals, hitmask)
-        layers[1,:,:]  = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer)
-        layers[2,:,:]  = self.calc_ambient(hitmask)
-        layers[3,:,:]  = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
+        layers[1,:,:] = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer)
+        layers[2,:,:] = self.calc_ambient(hitmask)
+        layers[3,:,:] = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
 
-        
+        # shadow_directions = np.zeros(self.shape_3)
+        # shadow_directions[:,:,:] = -light_vec
+        # shadow_raytrace = RayTracer(self.direct_raytrace.position_buffer.copy(), shadow_directions, self.scene)
+        # shadow_raytrace.run(100)
+        # shadow_mask = shadow_raytrace.calc_hitmask()
+        # shadows = np.zeros(shadow_mask.shape)
+        # shadows[~shadow_mask] = 1.
+        # layers[4,:,:] = shadows
 
-        return self.calc_image(layers, [.5, .2, .1, .2])
+        print(self.direct_raytrace.position_buffer)
+
+        return self.calc_image(layers, [.5, .1, .1, .3, .0])
 
      
 scene = Torus() + Sphere( .5, [0.,0.,3.]) + Plane([0.,0.,-1.], [0.,0.,6.])
 
-n=100
+n=300
 c = Renderer(4/3, (4*n,3*n), 1, scene)
-d = c.run(150)
+d = c.run(70)
 
 
 # %%
