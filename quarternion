@@ -1,0 +1,155 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 36,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 37,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "p = np.array([1.,1.,1.])\n",
+    "n_z = np.array([0.,0.,1.])\n",
+    "phi = np.pi/4"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 38,
+   "metadata": {},
+   "outputs": [
+    {
+     "output_type": "execute_result",
+     "data": {
+      "text/plain": "array([0., 1., 1., 1.])"
+     },
+     "metadata": {},
+     "execution_count": 38
+    }
+   ],
+   "source": [
+    "q_p = np.zeros(4)\n",
+    "q_p[1:] = p\n",
+    "q_p"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 39,
+   "metadata": {},
+   "outputs": [
+    {
+     "output_type": "execute_result",
+     "data": {
+      "text/plain": "array([0.92387953, 0.        , 0.        , 0.38268343])"
+     },
+     "metadata": {},
+     "execution_count": 39
+    }
+   ],
+   "source": [
+    "q_nz = np.array([np.cos(phi/2), *(np.sin(phi/2)*n_z)])\n",
+    "q_nz"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def q_mult(q1, q2):\n",
+    "    w1, x1, y1, z1 = q1\n",
+    "    w2, x2, y2, z2 = q2\n",
+    "    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2\n",
+    "    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2\n",
+    "    y = w1 * y2 + y1 * w2 + z1 * x2 - x1 * z2\n",
+    "    z = w1 * z2 + z1 * w2 + x1 * y2 - y1 * x2\n",
+    "    return np.array([w, x, y, z])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 41,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def q_con(q):\n",
+    "    w, x, y, z = q\n",
+    "    return np.array((w, -x, -y, -z))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "metadata": {},
+   "outputs": [
+    {
+     "output_type": "execute_result",
+     "data": {
+      "text/plain": "array([-0.38268343,  0.5411961 ,  1.30656296,  0.92387953])"
+     },
+     "metadata": {},
+     "execution_count": 42
+    }
+   ],
+   "source": [
+    "h = q_mult(q_nz, q_p)\n",
+    "h"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "metadata": {},
+   "outputs": [
+    {
+     "output_type": "execute_result",
+     "data": {
+      "text/plain": "array([ 0.00000000e+00, -1.11022302e-16,  1.41421356e+00,  1.00000000e+00])"
+     },
+     "metadata": {},
+     "execution_count": 43
+    }
+   ],
+   "source": [
+    "q_mult(h, q_con(q_nz))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.6-final"
+  },
+  "orig_nbformat": 2,
+  "kernelspec": {
+   "name": "python3",
+   "display_name": "Python 3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
