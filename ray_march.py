@@ -199,8 +199,17 @@ class Renderer:
         shadows[torch.isnan(shadows)] = 1.0
         return shadows
 
-    def calc_image(self, layer, weights):
-        return torch.einsum('ij,i->j', layer, torch.tensor(weights, device=dev)).clamp(0., 1.)
+    def calc_space_texture(self):
+        k = 1.0
+        res = torch.sign(torch.remainder(self.direct_raytrace.position_buffer[0,:], k)-k/2)
+        res *= torch.sign(torch.remainder(self.direct_raytrace.position_buffer[1,:], k)-k/2)
+        res *= torch.sign(torch.remainder(self.direct_raytrace.position_buffer[2,:], k)-k/2)
+        res += 1.0
+        res *= 0.5
+        return res
+
+    def calc_image(self, layer, weights, texture):
+        return torch.einsum('ij,i,j->j', layer, torch.tensor(weights, device=dev), texture).clamp(0., 1.)
 
     def run(self, iterations):
         self.direct_raytrace.run(iterations)
@@ -214,6 +223,7 @@ class Renderer:
         layers = torch.zeros(self.shape_n(4), device=dev)
 
         shadows = self.calc_shadow(light_vec, 100)
+        texture = 0.1*self.calc_space_texture()+0.9
         layers[0,:] = self.calc_diffuse(light_vec, normals, hitmask) * shadows
         layers[1,:] = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100.) * shadows
         layers[2,:] = self.calc_ambient(hitmask)
@@ -222,7 +232,7 @@ class Renderer:
         print(shadows)
 
         beauty_shadow =  [.4, .2, .2, .1,]
-        return self.calc_image(layers, beauty_shadow).reshape(self.resolution).cpu()
+        return self.calc_image(layers, beauty_shadow, texture).reshape(self.resolution).cpu()
 
 s = Sphere( 0.9)
 s.trans_vec = torch.tensor([-0.3, 0.0, 4.5], device=dev)
