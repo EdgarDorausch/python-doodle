@@ -3,26 +3,31 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from typing import Tuple
 
-def normalize(x, axis=0):
-    norm = np.linalg.norm(x,2, axis=axis)
-    return x / norm[np.newaxis,:,:]
+dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+print('Divice: ', dev)
+
+
+def normalize(x):
+    norm = torch.norm(x, dim=0)
+    return x / norm[np.newaxis,:]
 
 
 def split_input(fn):
     def position_component_splitter(self, pos):
-        x = pos[0,:,:]
-        y = pos[1,:,:]
-        z = pos[2,:,:]
+        x = pos[0,:]
+        y = pos[1,:]
+        z = pos[2,:]
 
         return fn(self,x,y,z)
     return position_component_splitter
 
 def apply_transformations(fn):
     def transformation_applicator(self, pos):
-        res = pos - self.trans_vec.reshape([3,1,1])
-        res = np.einsum('ji,ikl->jkl', np.linalg.inv(self.trans_mat), res)
+        res = pos - self.trans_vec.reshape([3,1])
+        res = torch.einsum('ji,ik->jk', torch.inverse(self.trans_mat), res)
         return fn(self, res)
 
     return transformation_applicator
@@ -31,15 +36,15 @@ def sq_norm(*components):
     return sum(el**2 for el in components)
 
 def norm(*components):
-    return np.sqrt(sq_norm(*components))
+    return torch.sqrt(sq_norm(*components))
 
 
 
 class RenderObject:
 
     def __init__(self):
-        self.trans_mat = np.identity(3)
-        self.trans_vec = np.zeros(3).reshape([3,1,1])
+        self.trans_mat = torch.eye(3, device=dev)
+        self.trans_vec = torch.zeros(3, device=dev).reshape([3,1,1])
 
     def calc_distances(self, x):
         raise NotImplementedError()
@@ -48,11 +53,8 @@ class RenderObject:
         s = self
         class LambdaRenderObject(RenderObject):
             def calc_distances(self, x):
-                m = np.zeros([2,x.shape[1], x.shape[2]])
-                m[0,:,:] = s.calc_distances(x)
-                m[1,:,:] = other.calc_distances(x)
-
-                return np.min(m, axis=0)
+                m = torch.zeros([2,x.shape[1]], device=dev)
+                return torch.min(s.calc_distances(x), other.calc_distances(x))
         return LambdaRenderObject()
 
 class Torus(RenderObject):
@@ -67,12 +69,12 @@ class Torus(RenderObject):
 class Plane(RenderObject):
     def __init__(self, normal, ppos):
         super(Plane, self).__init__()
-        self.normal = np.array(normal) / norm(*normal)
-        self.ppos = np.array(ppos).reshape([3,1,1])
+        self.normal = torch.tensor(normal, device=dev) / norm(*torch.tensor(normal))
+        self.ppos = torch.tensor(ppos, device=dev).reshape([3,1])
 
     @apply_transformations
     def calc_distances(self, pos):
-        return np.einsum('ijk,i->jk', pos-self.ppos, self.normal)
+        return torch.einsum('ij,i->j', pos-self.ppos, self.normal)
 
 class Sphere(RenderObject):
     def __init__(self, radius):
@@ -81,7 +83,7 @@ class Sphere(RenderObject):
 
     @apply_transformations
     def calc_distances(self, p):
-        return np.linalg.norm(p, axis=0) - self.radius
+        return torch.norm(p, dim=0) - self.radius
 
 
 
@@ -101,35 +103,35 @@ class RayTracer:
         self.direction_buffer = direction_buffer
         self.position_buffer = position_buffer + start_depth*direction_buffer
 
-        self.distance_buffer = np.zeros(self.shape_1)
-        self.depth_buffer = np.zeros(self.shape_1) + start_depth
+        self.distance_buffer = torch.zeros(self.shape_1, device=dev)
+        self.depth_buffer = torch.zeros(self.shape_1, device=dev) + start_depth
 
-        self.mindist_buffer = np.zeros(self.shape_1) + np.infty
+        self.mindist_buffer = torch.zeros(self.shape_1, device=dev) + np.infty
 
     def run(self, iterations):
         for i in range(iterations):
             self.distance_buffer = self.scene.calc_distances(self.position_buffer).reshape(self.shape_1)
             self.depth_buffer += self.distance_buffer 
             self.position_buffer += self.direction_buffer * abs(self.distance_buffer)
-            self.mindist_buffer = np.asarray([self.mindist_buffer,self.distance_buffer]).min(0)
+            # self.mindist_buffer = np.asarray([self.mindist_buffer,self.distance_buffer]).min(0)
 
     def calc_normals(self) -> np.ndarray:
-        normals = np.zeros(self.shape_3)
+        normals = torch.zeros(self.shape_3, device=dev)
         offset = 0.01
-        offset_vec_x = np.array([offset, 0, 0]).reshape([3,1,1])
-        offset_vec_y = np.array([0, offset, 0]).reshape([3,1,1])
-        offset_vec_z = np.array([0, 0, offset]).reshape([3,1,1])
+        offset_vec_x = torch.tensor([offset, 0, 0], device=dev).reshape([3,1])
+        offset_vec_y = torch.tensor([0, offset, 0], device=dev).reshape([3,1])
+        offset_vec_z = torch.tensor([0, 0, offset], device=dev).reshape([3,1])
 
-        normals[0,:,:] = self.distance_buffer[0,:,:] - self.scene.calc_distances(self.position_buffer + offset_vec_x)
-        normals[1,:,:] = self.distance_buffer[0,:,:] - self.scene.calc_distances(self.position_buffer + offset_vec_y)
-        normals[2,:,:] = self.distance_buffer[0,:,:] - self.scene.calc_distances(self.position_buffer + offset_vec_z)
+        normals[0,:] = self.distance_buffer[0,:] - self.scene.calc_distances(self.position_buffer + offset_vec_x)
+        normals[1,:] = self.distance_buffer[0,:] - self.scene.calc_distances(self.position_buffer + offset_vec_y)
+        normals[2,:] = self.distance_buffer[0,:] - self.scene.calc_distances(self.position_buffer + offset_vec_z)
 
-        normals = normalize(normals, axis=0)
+        normals = normalize(normals)
 
         return normals
 
     def calc_hitmask(self, thershold=0.05):
-        return self.distance_buffer[0,:,:] < thershold
+        return self.distance_buffer[0,:] < thershold
 
 class Renderer:
     def __init__(self, aspact_ratio: float, resolution: Tuple[int, int], z: float, scene: RenderObject):
@@ -140,18 +142,19 @@ class Renderer:
         self.aspact_ratio = aspact_ratio
         self.scene = scene
         self.resolution = resolution
-        self.shape_3 = [3, resolution[0], resolution[1]]
-        self.shape_1 = [1, resolution[0], resolution[1]]
-        self.shape_n = lambda n: (n, resolution[0], resolution[1])
+        self.shape_3 = [3, resolution[0]*resolution[1]]
+        self.shape_1 = [1, resolution[0]*resolution[1]]
+        self.shape_n = lambda n: (n, resolution[0]*resolution[1])
 
         # ([x, y, z], width, height)
-        position_buffer = np.zeros(self.shape_3)
-        position_buffer[0,:,:] = np.linspace(-aspact_ratio/2, aspact_ratio/2, num=resolution[0])[:, np.newaxis]
-        position_buffer[1,:,:] = np.linspace(-.5, .5, num=resolution[1])[:, np.newaxis].T
+        position_buffer = torch.zeros([3, resolution[0],resolution[1]], device=dev)
+        position_buffer[0,:,:] = torch.linspace(-aspact_ratio/2, aspact_ratio/2, steps=resolution[0])[:, np.newaxis]
+        position_buffer[1,:,:] = torch.linspace(-.5, .5, steps=resolution[1])[:, np.newaxis].T
+        position_buffer = position_buffer.reshape(self.shape_3)
         
-        direction_buffer = position_buffer.copy()
-        direction_buffer[2, :, :] = z
-        direction_buffer = normalize(direction_buffer, axis=0)
+        direction_buffer = position_buffer.clone()
+        direction_buffer[2, :] = z
+        direction_buffer = normalize(direction_buffer)
 
         self.direct_raytrace = RayTracer(position_buffer, direction_buffer, scene)
 
@@ -161,57 +164,57 @@ class Renderer:
 
 
     def calc_diffuse(self, light_vec, normals, hitmask):
-        diffuse = np.sum(normals*light_vec, axis=0)
-        diffuse = np.clip(diffuse, 0., 1.)
+        diffuse = torch.sum(normals*light_vec, dim=0)
+        diffuse = torch.clamp(diffuse, 0., 1.)
         diffuse[~hitmask] = 0.0
         return diffuse
 
     def calc_specular(self, light_vec, normals, hitmask, direction_buffer, slope=1.0):
-        r = 2*np.sum(direction_buffer*normals, axis=0)*normals - direction_buffer
-        specular = np.sum(r*light_vec, axis=0)
-        specular = np.power(specular.clip(0., 1.), slope)
+        r = 2*torch.sum(direction_buffer*normals, dim=0)*normals - direction_buffer
+        specular = torch.sum(r*light_vec, dim=0)
+        specular = torch.pow(specular.clamp(0., 1.), slope)
         specular[~hitmask] = 0.0
         return specular
 
     def calc_ambient(self, hitmask):
-        ambient = np.zeros(hitmask.shape)
+        ambient = torch.zeros(hitmask.shape, device=dev)
         ambient[hitmask] = 1.
         return ambient
 
     def calc_fresnel(self, normals, hitmask, direction_buffer):
-        fresnel = 1. - np.sum(direction_buffer*normals, axis=0).clip(0.,1.)
+        fresnel = 1. - torch.sum(direction_buffer*normals, dim=0).clamp(0.,1.)
         fresnel[~hitmask] = 0.0
         return fresnel
 
     def calc_shadow(self, light_vec, iterations):
-        shadow_directions = np.zeros(self.shape_3)
-        shadow_directions[:,:,:] = -light_vec
-        shadow_raytrace = RayTracer(self.direct_raytrace.position_buffer.copy(), shadow_directions, self.scene, 0.1)
+        shadow_directions = torch.zeros(self.shape_3, device=dev)
+        shadow_directions[:,:] = -light_vec
+        shadow_raytrace = RayTracer(self.direct_raytrace.position_buffer.clone(), shadow_directions, self.scene, 0.1)
         shadow_raytrace.run(iterations)
         shadow_mask = shadow_raytrace.calc_hitmask(0.01)
-        shadows = np.zeros(shadow_mask.shape)
+        shadows = torch.zeros(shadow_mask.shape, device=dev)
         shadows[~shadow_mask] = 1.
         return shadows
 
     def calc_image(self, layer, weights):
-        return np.einsum('ijk,i->jk', layer, np.array(weights)).clip(0., 1.)
+        return torch.einsum('ij,i->j', layer, torch.tensor(weights, device=dev)).clamp(0., 1.)
 
     def run(self, iterations):
         self.direct_raytrace.run(iterations)
 
-        light_vec = np.array([0.1, 0.5, .2]).reshape([3,1,1])
-        light_vec = normalize(light_vec, axis=0)
+        light_vec = torch.tensor([0.1, 0.5, .2], device=dev).reshape([3,1])
+        light_vec = normalize(light_vec)
 
         hitmask = self.direct_raytrace.calc_hitmask(0.5)
         normals = self.direct_raytrace.calc_normals()
 
-        layers = np.zeros(self.shape_n(4))
+        layers = torch.zeros(self.shape_n(4), device=dev)
 
         shadows = self.calc_shadow(light_vec, 100)
-        layers[0,:,:] = self.calc_diffuse(light_vec, normals, hitmask) * shadows
-        layers[1,:,:] = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100.) * shadows
-        layers[2,:,:] = self.calc_ambient(hitmask)
-        layers[3,:,:] = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
+        layers[0,:] = self.calc_diffuse(light_vec, normals, hitmask) * shadows
+        layers[1,:] = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100.) * shadows
+        layers[2,:] = self.calc_ambient(hitmask)
+        layers[3,:] = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
 
         beauty =  [.5, .1, .2, .3]
         beauty_shadow =  [.4, .2, .2, .1,]
@@ -219,11 +222,11 @@ class Renderer:
         return self.calc_image(layers, beauty_shadow)
 
 s = Sphere( 0.9)
-s.trans_vec = np.array([-0.3, 0.0, 4.5])
+s.trans_vec = torch.tensor([-0.3, 0.0, 4.5], device=dev)
 
 t = Torus()
-t.trans_vec = np.array([0., -1.2, 3.])
-t.trans_mat = np.array([[1,0,0],[0,0,1],[0,-1,0]], dtype=float)
+t.trans_vec = torch.tensor([0., -1.2, 3.], device=dev)
+t.trans_mat = torch.tensor([[1,0,0],[0,0,1],[0,-1,0]],device=dev, dtype=torch.float32)
 
 p = Plane([0.,-1.,-0.1], [0.,1.2,0.])
 scene = t + s + p
@@ -239,5 +242,5 @@ d = c.run(100)
 # im = Image.fromarray(np.uint8(cm.gray(d.T)*255))
 # im.show()
 
-plt.imshow(d.T, cmap='gray')
+plt.imshow(d.reshape(4*n,3*n).T.cpu(), cmap='gray')
 plt.show()
