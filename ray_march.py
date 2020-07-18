@@ -110,10 +110,12 @@ class RayTracer:
 
     def run(self, iterations):
         for i in range(iterations):
+            k=16.0
             self.distance_buffer = self.scene.calc_distances(self.position_buffer).reshape(self.shape_1)
             self.depth_buffer += self.distance_buffer 
-            self.position_buffer += self.direction_buffer * abs(self.distance_buffer)
-            # self.mindist_buffer = np.asarray([self.mindist_buffer,self.distance_buffer]).min(0)
+            self.position_buffer += self.direction_buffer * self.distance_buffer
+            self.mindist_buffer = torch.min(self.mindist_buffer, k*self.distance_buffer/self.depth_buffer)
+            print(f'{100*i/iterations:2.1f} %', end='\r')
 
     def calc_normals(self) -> np.ndarray:
         normals = torch.zeros(self.shape_3, device=dev)
@@ -192,8 +194,9 @@ class Renderer:
         shadow_raytrace = RayTracer(self.direct_raytrace.position_buffer.clone(), shadow_directions, self.scene, 0.1)
         shadow_raytrace.run(iterations)
         shadow_mask = shadow_raytrace.calc_hitmask(0.01)
-        shadows = torch.zeros(shadow_mask.shape, device=dev)
-        shadows[~shadow_mask] = 1.
+        shadows = shadow_raytrace.mindist_buffer[0,:].clamp(0.,1.0)
+        shadows[shadow_mask] = 0.0
+        shadows[torch.isnan(shadows)] = 1.0
         return shadows
 
     def calc_image(self, layer, weights):
@@ -205,7 +208,7 @@ class Renderer:
         light_vec = torch.tensor([0.1, 0.5, .2], device=dev).reshape([3,1])
         light_vec = normalize(light_vec)
 
-        hitmask = self.direct_raytrace.calc_hitmask(0.5)
+        hitmask = self.direct_raytrace.calc_hitmask(0.1)
         normals = self.direct_raytrace.calc_normals()
 
         layers = torch.zeros(self.shape_n(4), device=dev)
@@ -216,10 +219,10 @@ class Renderer:
         layers[2,:] = self.calc_ambient(hitmask)
         layers[3,:] = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
 
-        beauty =  [.5, .1, .2, .3]
-        beauty_shadow =  [.4, .2, .2, .1,]
+        print(shadows)
 
-        return self.calc_image(layers, beauty_shadow)
+        beauty_shadow =  [.4, .2, .2, .1,]
+        return self.calc_image(layers, beauty_shadow).reshape(self.resolution).cpu()
 
 s = Sphere( 0.9)
 s.trans_vec = torch.tensor([-0.3, 0.0, 4.5], device=dev)
@@ -231,16 +234,10 @@ t.trans_mat = torch.tensor([[1,0,0],[0,0,1],[0,-1,0]],device=dev, dtype=torch.fl
 p = Plane([0.,-1.,-0.1], [0.,1.2,0.])
 scene = t + s + p
 
-n=100
-c = Renderer(4/3, (4*n,3*n), 1, scene)
-d = c.run(100)
+n=1
+r=(1920,1080)
+c = Renderer(r[0]/r[1], (int(r[0]*n),int(r[1]*n)), 1, scene)
+d = c.run(150)
 
-
-# from PIL import Image
-# from matplotlib import cm
-
-# im = Image.fromarray(np.uint8(cm.gray(d.T)*255))
-# im.show()
-
-plt.imshow(d.reshape(4*n,3*n).T.cpu(), cmap='gray')
+plt.imshow(d.T, cmap='gray')
 plt.show()
