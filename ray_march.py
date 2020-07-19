@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from typing import Tuple
 
+from torch import device
+
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 print('Divice: ', dev)
 
@@ -133,31 +135,20 @@ class RayTracer:
         return normals
 
     def calc_hitmask(self, thershold=0.05):
-        return self.distance_buffer[0,:] < thershold
+        return self.distance_buffer < thershold
 
 class Renderer:
-    def __init__(self, aspact_ratio: float, resolution: Tuple[int, int], z: float, scene: RenderObject):
+    def __init__(self, scene: RenderObject, position_buffer, direction_buffer):
         """
         :param: aspect_ratio - width/height
         :param: resolution - (width, height)
         """
-        self.aspact_ratio = aspact_ratio
+
+        self.shape_n = lambda n: (n, position_buffer.shape[1])
+        self.shape_3 = self.shape_n(3)
+        self.shape_1 = self.shape_n(1)
+
         self.scene = scene
-        self.resolution = resolution
-        self.shape_3 = [3, resolution[0]*resolution[1]]
-        self.shape_1 = [1, resolution[0]*resolution[1]]
-        self.shape_n = lambda n: (n, resolution[0]*resolution[1])
-
-        # ([x, y, z], width, height)
-        position_buffer = torch.zeros([3, resolution[0],resolution[1]], device=dev)
-        position_buffer[0,:,:] = torch.linspace(-aspact_ratio/2, aspact_ratio/2, steps=resolution[0])[:, np.newaxis]
-        position_buffer[1,:,:] = torch.linspace(-.5, .5, steps=resolution[1])[:, np.newaxis].T
-        position_buffer = position_buffer.reshape(self.shape_3)
-        
-        direction_buffer = position_buffer.clone()
-        direction_buffer[2, :] = z
-        direction_buffer = normalize(direction_buffer)
-
         self.direct_raytrace = RayTracer(position_buffer, direction_buffer, scene)
 
 
@@ -165,28 +156,28 @@ class Renderer:
         return self.scene.calc_distances(position_buffer)
 
 
-    def calc_diffuse(self, light_vec, normals, hitmask):
-        diffuse = torch.sum(normals*light_vec, dim=0)
-        diffuse = torch.clamp(diffuse, 0., 1.)
+    def calc_diffuse(self, light_vec, normals, hitmask, color, shadows):
+        diffuse = torch.sum(normals*light_vec, dim=0).reshape(self.shape_1)
+        diffuse = torch.clamp(diffuse, 0., 1.)*shadows
         diffuse[~hitmask] = 0.0
-        return diffuse
+        return color * diffuse
 
-    def calc_specular(self, light_vec, normals, hitmask, direction_buffer, slope=1.0):
+    def calc_specular(self, light_vec, normals, hitmask, direction_buffer, slope, color, shadows):
         r = 2*torch.sum(direction_buffer*normals, dim=0)*normals - direction_buffer
-        specular = torch.sum(r*light_vec, dim=0)
-        specular = torch.pow(specular.clamp(0., 1.), slope)
+        specular = torch.sum(r*light_vec, dim=0).reshape(self.shape_1)
+        specular = torch.pow(specular.clamp(0., 1.), slope) * shadows
+
         specular[~hitmask] = 0.0
-        return specular
-
-    def calc_ambient(self, hitmask):
-        ambient = torch.zeros(hitmask.shape, device=dev)
+        return specular * color 
+    def calc_ambient(self, hitmask, color):
+        ambient = torch.zeros(self.shape_1, device=dev)
         ambient[hitmask] = 1.
-        return ambient
+        return ambient * color
 
-    def calc_fresnel(self, normals, hitmask, direction_buffer):
-        fresnel = 1. - torch.sum(direction_buffer*normals, dim=0).clamp(0.,1.)
+    def calc_fresnel(self, normals, hitmask, direction_buffer, color):
+        fresnel = 1. - torch.sum(direction_buffer*normals, dim=0).clamp(0.,1.).reshape(self.shape_1)
         fresnel[~hitmask] = 0.0
-        return fresnel
+        return fresnel * color
 
     def calc_shadow(self, light_vec, iterations):
         shadow_directions = torch.zeros(self.shape_3, device=dev)
@@ -194,7 +185,7 @@ class Renderer:
         shadow_raytrace = RayTracer(self.direct_raytrace.position_buffer.clone(), shadow_directions, self.scene, 0.1)
         shadow_raytrace.run(iterations)
         shadow_mask = shadow_raytrace.calc_hitmask(0.01)
-        shadows = shadow_raytrace.mindist_buffer[0,:].clamp(0.,1.0)
+        shadows = shadow_raytrace.mindist_buffer.clamp(0.,1.0)
         shadows[shadow_mask] = 0.0
         shadows[torch.isnan(shadows)] = 1.0
         return shadows
@@ -217,22 +208,56 @@ class Renderer:
         light_vec = torch.tensor([0.1, 0.5, .2], device=dev).reshape([3,1])
         light_vec = normalize(light_vec)
 
-        hitmask = self.direct_raytrace.calc_hitmask(0.1)
+        hitmask = self.direct_raytrace.calc_hitmask(0.01)
         normals = self.direct_raytrace.calc_normals()
 
-        layers = torch.zeros(self.shape_n(4), device=dev)
+        colors = torch.zeros(self.shape_3, device=dev)
+
+        diffuse, specular, ambient, fresnel =  [.4, .2, .2, .1,]
+
+        white = red = torch.tensor([1.,1.,1.], device=dev).reshape([3,1])
+        red = torch.tensor([1.,0.,0.], device=dev).reshape([3,1])
+        cornflower_blue = red = torch.tensor([100.,149.,237.], device=dev).reshape([3,1])/255.
 
         shadows = self.calc_shadow(light_vec, 100)
         texture = 0.1*self.calc_space_texture()+0.9
-        layers[0,:] = self.calc_diffuse(light_vec, normals, hitmask) * shadows
-        layers[1,:] = self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100.) * shadows
-        layers[2,:] = self.calc_ambient(hitmask)
-        layers[3,:] = self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer)
+        texture = white *texture
 
-        print(shadows)
+        background = torch.zeros(self.shape_1, device=dev)
+        background[~hitmask] = 1.0
 
-        beauty_shadow =  [.4, .2, .2, .1,]
-        return self.calc_image(layers, beauty_shadow, texture).reshape(self.resolution).cpu()
+        colors += background * cornflower_blue
+        colors += diffuse * self.calc_diffuse(light_vec, normals, hitmask, texture, shadows)
+        colors += specular * self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100., texture, shadows) * shadows
+        colors += ambient * self.calc_ambient(hitmask, white)
+        colors += fresnel * self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer, red)
+
+        return colors
+
+class Camera:
+    def __init__(self, aspact_ratio: float, resolution: Tuple[int, int], z: float, scene: RenderObject):
+        self.aspact_ratio = aspact_ratio
+        self.scene = scene
+        self.resolution = resolution
+        self.shape_3 = [3, resolution[0]*resolution[1]]
+        self.shape_1 = [1, resolution[0]*resolution[1]]
+        self.shape_n = lambda n: (n, resolution[0]*resolution[1])
+
+        # ([x, y, z], width, height)
+        position_buffer = torch.zeros([3, resolution[0],resolution[1]], device=dev)
+        position_buffer[0,:,:] = torch.linspace(-aspact_ratio/2, aspact_ratio/2, steps=resolution[0])[:, np.newaxis]
+        position_buffer[1,:,:] = torch.linspace(-.5, .5, steps=resolution[1])[:, np.newaxis].T
+        position_buffer = position_buffer.reshape(self.shape_3)
+        
+        direction_buffer = position_buffer.clone()
+        direction_buffer[2, :] = z
+        direction_buffer = normalize(direction_buffer)
+
+        self.renderer = Renderer(scene, position_buffer, direction_buffer)
+
+    def run(self):
+        return self.renderer.run(120).reshape([3,*self.resolution]).cpu()
+
 
 s = Sphere( 0.9)
 s.trans_vec = torch.tensor([-0.3, 0.0, 4.5], device=dev)
@@ -246,8 +271,8 @@ scene = t + s + p
 
 n=1
 r=(1920,1080)
-c = Renderer(r[0]/r[1], (int(r[0]*n),int(r[1]*n)), 1, scene)
-d = c.run(150)
+c = Camera(r[0]/r[1], (int(r[0]*n),int(r[1]*n)), 1, scene)
+d = c.run()
 
-plt.imshow(d.T, cmap='gray')
+plt.imshow(d.T)
 plt.show()
