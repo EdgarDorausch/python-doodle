@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from typing import Tuple
 
-from torch import device
+from torch import device, inverse
 
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 print('Divice: ', dev)
@@ -155,6 +155,8 @@ class Renderer:
     def calc_distances(self, position_buffer):
         return self.scene.calc_distances(position_buffer)
 
+    def calc_reflection_directions(self, direction_buffer, normals):
+        return 2*torch.sum(direction_buffer*normals, dim=0)*normals - direction_buffer
 
     def calc_diffuse(self, light_vec, normals, hitmask, color, shadows):
         diffuse = torch.sum(normals*light_vec, dim=0).reshape(self.shape_1)
@@ -162,9 +164,8 @@ class Renderer:
         diffuse[~hitmask] = 0.0
         return color * diffuse
 
-    def calc_specular(self, light_vec, normals, hitmask, direction_buffer, slope, color, shadows):
-        r = 2*torch.sum(direction_buffer*normals, dim=0)*normals - direction_buffer
-        specular = torch.sum(r*light_vec, dim=0).reshape(self.shape_1)
+    def calc_specular(self, light_vec, refl_directions, hitmask, slope, color, shadows):
+        specular = torch.sum(refl_directions*light_vec, dim=0).reshape(self.shape_1)
         specular = torch.pow(specular.clamp(0., 1.), slope) * shadows
 
         specular[~hitmask] = 0.0
@@ -202,16 +203,28 @@ class Renderer:
     def calc_image(self, layer, weights, texture):
         return torch.einsum('ij,i,j->j', layer, torch.tensor(weights, device=dev), texture).clamp(0., 1.)
 
-    def run(self, iterations):
+    def run(self, iterations, reflection_depth):
         self.direct_raytrace.run(iterations)
 
         light_vec = torch.tensor([0.1, 0.5, .2], device=dev).reshape([3,1])
         light_vec = normalize(light_vec)
 
         hitmask = self.direct_raytrace.calc_hitmask(0.01)
+        invhitmask_float = torch.zeros(hitmask.shape, device=dev)
+        invhitmask_float[~hitmask] = 1.0
+
         normals = self.direct_raytrace.calc_normals()
+        refl_directions = self.calc_reflection_directions(normals, self.direct_raytrace.direction_buffer)
 
         colors = torch.zeros(self.shape_3, device=dev)
+
+
+        if reflection_depth != 0:
+            reflection_renderer = Renderer(self.scene, self.direct_raytrace.position_buffer.clone() + 0.1*refl_directions, refl_directions)
+            reflection_color = reflection_renderer.run(100, reflection_depth-1)*0.2
+            reflection_color[:, ~hitmask[0,:]] = 0.0
+
+            colors += reflection_color
 
         diffuse, specular, ambient, fresnel =  [.4, .2, .2, .1,]
 
@@ -228,10 +241,11 @@ class Renderer:
 
         colors += background * cornflower_blue
         colors += diffuse * self.calc_diffuse(light_vec, normals, hitmask, texture, shadows)
-        colors += specular * self.calc_specular(light_vec, normals, hitmask, self.direct_raytrace.direction_buffer, 100., texture, shadows) * shadows
+        colors += specular * self.calc_specular(light_vec, refl_directions , hitmask, 100., texture, shadows) * shadows
         colors += ambient * self.calc_ambient(hitmask, white)
         colors += fresnel * self.calc_fresnel(normals, hitmask, self.direct_raytrace.direction_buffer, red)
 
+        
         return colors
 
 class Camera:
@@ -256,7 +270,7 @@ class Camera:
         self.renderer = Renderer(scene, position_buffer, direction_buffer)
 
     def run(self):
-        return self.renderer.run(120).reshape([3,*self.resolution]).cpu()
+        return self.renderer.run(120, 1).clamp(0.,1.).reshape([3,*self.resolution]).cpu()
 
 
 s = Sphere( 0.9)
